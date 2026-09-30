@@ -15,7 +15,6 @@ from langgraph.config import get_config
 
 logger = logging.getLogger(__name__)
 
-
 class UtcDatetimeMiddleware(AgentMiddleware):
     """Append a `Current UTC date: ...` line to the system message.
 

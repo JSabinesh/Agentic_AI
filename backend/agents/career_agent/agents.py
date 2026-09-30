@@ -39,7 +39,7 @@ from langgraph.store.base import BaseStore
 # subagent usage guidance plus the subagent list in the `task` TOOL description
 # ({available_agents}); CAREER_AGENT.md adds the per-stage task-input templates.
 
-_MODEL = "openai:gpt-5.6-terra"
+_MODEL = "google_genai:gemini-3.5-flash"
 
 _backend = CompositeBackend(
     # Shell/default route, picked by SANDBOX_PROVIDER at graph build time:

@@ -39,7 +39,7 @@ from langgraph.store.base import BaseStore
 #: Same bake-time default as the career agent, so the frontend's model picker
 #: (`configurable.main_agent_model`, read by ModelOverrideMiddleware) behaves
 #: identically for both agents.
-_MODEL = "openai:gpt-5.6-terra"
+_MODEL = "google_genai:gemini-3.5-flash"
 
 #: KV/object root for this agent's artifacts. Registered in
 #: `object_storage.AREA_ROOTS`, which is what maps `/charts/` and `/reports/`

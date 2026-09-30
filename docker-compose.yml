@@ -55,10 +55,10 @@ services:
           "CMD-SHELL",
           "node -e \"fetch('http://localhost:3000/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\"",
         ]
-      interval: 30s
+      interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 60s
 
   redis:
     image: redis:8
@@ -82,11 +82,11 @@ services:
       - pg-data:/var/lib/postgresql/18/docker
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      start_period: 10s
-      timeout: 1s
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      start_period: 15s
+      timeout: 2s
       retries: 5
-      interval: 60s
+      interval: 10s
       start_interval: 1s
 
   # S3-compatible object storage for binary artifacts (uploads + rendered
