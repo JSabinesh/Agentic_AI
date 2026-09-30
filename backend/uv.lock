@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -1174,8 +1174,8 @@ name = "httpcore2"
 version = "2.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11", marker = "sys_platform != 'emscripten'" },
-    { name = "truststore", marker = "sys_platform != 'emscripten'" },
+    { name = "h11" },
+    { name = "truststore" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/be/ad/f4f0e57345f1870f3e8cb624e058d7eca6e5a27d33bcc3311d9b618734cd/httpcore2-2.12.0.tar.gz", hash = "sha256:9293522bba0aa7c4c8e9e3f040c16575bd8868e155a77fa30c7a9085a5eae648", size = 67548, upload-time = "2026-08-18T13:22:08.211Z" }
 wheels = [
@@ -1676,7 +1676,7 @@ otel = [
 
 [[package]]
 name = "llama-cloud"
-version = "2.15.0"
+version = "2.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1686,9 +1686,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a4/5b/0972151987eb83a703dd8c8b0407f72c86eddb5dad49274f9c596561e193/llama_cloud-2.15.0.tar.gz", hash = "sha256:141bb0fecd404f3d826d9998a74c9678c101433b779e9dc68f0b9657d862f4c4", size = 3578083, upload-time = "2026-08-28T02:43:44.17Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/23/6723b40183322124ae1825185b1831bdbf12d41deb75007022934220511c/llama_cloud-2.16.0.tar.gz", hash = "sha256:248ddc6a6b3945e587f8f79695550f8f4c91ec6cddf8e0513c6d712a3a3ac79a", size = 3579829, upload-time = "2026-09-08T23:12:17.613Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/47/40/748a15c6d0e53e888e60b1398010c8f28bb89defec48193274341abd7acd/llama_cloud-2.15.0-py3-none-any.whl", hash = "sha256:0b8a158e5b96dfe818a49474fcf592d84fac306b980e3ba9bb8e94d446584cc8", size = 479858, upload-time = "2026-08-28T02:43:42.641Z" },
+    { url = "https://files.pythonhosted.org/packages/06/da/3fdf1fb5c1017d4bd4aeb0d8e213c3fe72181f52b233cdc174a41a79fc28/llama_cloud-2.16.0-py3-none-any.whl", hash = "sha256:9ab6bc8e53811e462a1b6251c1c794265bea25050d65a2c351eb1a47689c878e", size = 483664, upload-time = "2026-09-08T23:12:15.336Z" },
 ]
 
 [[package]]
