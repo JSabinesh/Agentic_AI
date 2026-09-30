@@ -1,15 +1,26 @@
-.env
-.ruff_cache
+# Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+
+# Local Claude files
 CLAUDE.local.md
 .claude/settings.local.json
 
-# dbt build artifacts (analytics/)
+# dbt build artifacts
 analytics/dbt/target/
 analytics/dbt/logs/
 analytics/dbt/dbt_packages/
 analytics/dbt/.user.yml
 
-# Understand-Anything graph: ship the graph, not its rebuild artifacts
+# Understand-Anything graph artifacts
 .ua/intermediate/
 .ua/diff-overlay.json
 .ua/.trash-*/
+
+# Node
+node_modules/
+
+# Build artifacts
+dist/
+build/
