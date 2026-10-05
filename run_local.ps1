@@ -6,4 +6,4 @@ Write-Host "Zero-Docker Local Mode. Starting on http://localhost:8000 ...`n" -Fo
 
 Set-Location $PSScriptRoot
 
-uv run --with fastapi --with uvicorn --with google-genai --with tavily-python --with llama-cloud --with pypdf --with python-docx --with rendercv --with python-multipart --with python-dotenv python -m uvicorn local_app.main:app --host 0.0.0.0 --port 8000 --reload
+uv run --with fastapi --with uvicorn --with google-genai --with tavily-python --with llama-cloud --with llama-parse --with pypdf --with python-docx --with rendercv --with reportlab --with python-multipart --with python-dotenv python -m uvicorn local_app.main:app --host 0.0.0.0 --port 8000 --reload

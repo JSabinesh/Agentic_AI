@@ -24,3 +24,15 @@ node_modules/
 # Build artifacts
 dist/
 build/
+
+# Local app temporary / runtime files & reports
+test_*
+pdf_extracted_images/
+extracted_assets/
+NextRole_*
+generate_*
+dom_dump*
+architecture_diagram*
+local_app/generated_resumes/
+local_app/career_memory.json
+local_app/generate_architecture_pdf.py

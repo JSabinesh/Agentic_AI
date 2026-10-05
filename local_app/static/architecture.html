@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NextRole — System Architecture Diagram</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background-color: #f1f5f9;
+      color: #1e293b;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 30px 20px;
+    }
+
+    .toolbar {
+      width: 100%;
+      max-width: 1360px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .title-group h1 {
+      font-size: 22px;
+      font-weight: 800;
+      color: #0f172a;
+      letter-spacing: -0.02em;
+    }
+
+    .title-group p {
+      font-size: 13px;
+      color: #64748b;
+      margin-top: 3px;
+    }
+
+    .btn-action {
+      background: #0f172a;
+      color: #fff;
+      border: 1px solid #334155;
+      padding: 8px 16px;
+      font-size: 12px;
+      font-weight: 600;
+      border-radius: 6px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+
+    .btn-action:hover {
+      background: #1e293b;
+    }
+
+    /* ── Main Canvas (16:9 Presentation Frame) ── */
+    .canvas-container {
+      width: 100%;
+      max-width: 1360px;
+      background: #ffffff;
+      border-radius: 14px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
+      border: 1px solid #e2e8f0;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .diagram-board {
+      position: relative;
+      width: 100%;
+      min-width: 1200px;
+      height: 720px;
+      display: grid;
+      grid-template-columns: 210px 140px 300px 330px 220px;
+    }
+
+    /* ── Columns (Swimlanes) ── */
+    .swimlane {
+      position: relative;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 25px;
+      z-index: 2;
+    }
+
+    .col-users {
+      background: #ffffff;
+    }
+
+    .col-channels {
+      background: #ffffff;
+      border-right: 1px solid #f1f5f9;
+    }
+
+    .col-ux {
+      background: #e0f7fa; /* Tinted Cyan/Mint */
+      border-left: 1px solid #b2ebf2;
+      border-right: 1px solid #b2ebf2;
+    }
+
+    .col-middleware {
+      background: #fef3c7; /* Tinted Warm Peach/Yellow */
+      border-right: 1px solid #fde68a;
+    }
+
+    .col-backend {
+      background: #ede9fe; /* Tinted Soft Lavender */
+    }
+
+    .lane-header {
+      font-size: 18px;
+      font-weight: 800;
+      color: #0f172a;
+      text-align: center;
+      margin-bottom: 30px;
+      letter-spacing: -0.01em;
+      line-height: 1.25;
+      padding: 0 10px;
+    }
+
+    /* ── Node Elements ── */
+    .node-stack {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 28px;
+      padding: 0 16px;
+    }
+
+    /* Column 1: Users */
+    .user-card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      width: 170px;
+    }
+
+    .user-icon-wrap {
+      width: 54px;
+      height: 54px;
+      border-radius: 50%;
+      background: #f1f5f9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 8px;
+      color: #0f172a;
+      border: 1px solid #e2e8f0;
+    }
+
+    .user-label {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.3;
+    }
+
+    .user-sub {
+      font-size: 11px;
+      color: #64748b;
+      margin-top: 2px;
+    }
+
+    /* Column 2: Channels */
+    .channel-box {
+      width: 76px;
+      height: 72px;
+      background: #ffffff;
+      border: 1.5px solid #0f172a;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+      cursor: pointer;
+      transition: transform 0.15s;
+    }
+
+    .channel-box:hover {
+      transform: translateY(-2px);
+    }
+
+    .channel-caption {
+      font-size: 10px;
+      font-weight: 700;
+      color: #475569;
+      margin-top: 4px;
+      text-align: center;
+    }
+
+    /* Column 3: User Experience (Teal Cards) */
+    .ux-card {
+      width: 100%;
+      background: #00796b; /* Exact rich teal as sample */
+      color: #ffffff;
+      border-radius: 6px;
+      padding: 13px 14px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      box-shadow: 0 4px 6px -1px rgba(0, 121, 107, 0.25);
+      border: 1px solid #004d40;
+      position: relative;
+    }
+
+    .ux-card .badge {
+      display: block;
+      font-size: 10px;
+      font-weight: 500;
+      color: #80cbc4;
+      margin-top: 2px;
+    }
+
+    /* Column 4: Middleware (Orange Cards) */
+    .mw-card {
+      width: 100%;
+      background: #f59e0b; /* Exact amber/orange as sample */
+      color: #ffffff;
+      border-radius: 6px;
+      padding: 13px 14px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      box-shadow: 0 4px 6px -1px rgba(245, 158, 11, 0.25);
+      border: 1px solid #d97706;
+      position: relative;
+    }
+
+    .mw-card .mw-tag {
+      display: block;
+      font-size: 10px;
+      font-weight: 600;
+      color: #fef3c7;
+      margin-top: 2px;
+    }
+
+    /* Column 5: Back End Resources (Purple Cards) */
+    .be-card {
+      width: 100%;
+      background: #8b5cf6; /* Exact vibrant purple as sample */
+      color: #ffffff;
+      border-radius: 6px;
+      padding: 14px 14px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      box-shadow: 0 4px 6px -1px rgba(139, 92, 246, 0.25);
+      border: 1px solid #7c3aed;
+      position: relative;
+    }
+
+    .be-card .be-meta {
+      display: block;
+      font-size: 10px;
+      font-weight: 500;
+      color: #ede9fe;
+      margin-top: 2px;
+    }
+
+    /* ── SVG Connections Overlay ── */
+    #svg-connections {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .conn-line {
+      stroke: #334155;
+      stroke-width: 1.5;
+      fill: none;
+    }
+
+    .conn-dashed {
+      stroke: #ef4444;
+      stroke-width: 1.8;
+      stroke-dasharray: 4, 4;
+      fill: none;
+    }
+
+    /* ── Footer Legend ── */
+    .legend-bar {
+      width: 100%;
+      max-width: 1360px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 15px;
+      padding: 12px 18px;
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #475569;
+    }
+
+    .legend-items {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation & Action -->
+  <div class="toolbar">
+    <div class="title-group">
+      <h1>NextRole — End-to-End System Architecture</h1>
+      <p>5-Tier Architecture: Persona Channels, User Experience, Autonomous Multi-Agent Middleware & Foundation Resources</p>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <button class="btn-action" onclick="window.print()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+        Print / Save PDF
+      </button>
+      <a href="http://localhost:8000/" target="_blank" class="btn-action" style="background:#2563eb; border-color:#1d4ed8; text-decoration:none;">
+        Open Local App →
+      </a>
+    </div>
+  </div>
+
+  <!-- 16:9 Architectural Board Container -->
+  <div class="canvas-container">
+    <div class="diagram-board" id="diagram-board">
+
+      <!-- Column 1: Users -->
+      <div class="swimlane col-users">
+        <div class="lane-header">Users</div>
+        <div class="node-stack" style="margin-top: 30px; gap: 70px;">
+          <!-- User 1 -->
+          <div class="user-card" id="u-candidates">
+            <div class="user-icon-wrap">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 3s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+            </div>
+            <div class="user-label">Candidates &amp;<br>Job Seekers</div>
+            <div class="user-sub">CV upload &amp; match</div>
+          </div>
+
+          <!-- User 2 -->
+          <div class="user-card" id="u-interviewees">
+            <div class="user-icon-wrap">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+            </div>
+            <div class="user-label">Interview<br>Candidates</div>
+            <div class="user-sub">Live voice mock drills</div>
+          </div>
+
+          <!-- User 3 -->
+          <div class="user-card" id="u-learners">
+            <div class="user-icon-wrap">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82zM12 3L1 9l11 6 9-4.91V17h2V9L12 3z"/></svg>
+            </div>
+            <div class="user-label">Upskilling<br>Learners</div>
+            <div class="user-sub">Skill roadmap mastery</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 2: Channels -->
+      <div class="swimlane col-channels">
+        <div class="lane-header">Channels</div>
+        <div class="node-stack" style="margin-top: 75px; gap: 110px;">
+          <!-- Channel 1: Desktop Web Browser -->
+          <div class="channel-box" id="ch-browser">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+            <span class="channel-caption">Web App</span>
+          </div>
+
+          <!-- Channel 2: Real-time Audio Mic -->
+          <div class="channel-box" id="ch-voice">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+            <span class="channel-caption">Voice Audio</span>
+          </div>
+
+          <!-- Channel 3: Mobile Web -->
+          <div class="channel-box" id="ch-mobile">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#0f172a" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect><line x1="12" y1="18" x2="12.01" y2="18"></line></svg>
+            <span class="channel-caption">Mobile UI</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 3: User Experience -->
+      <div class="swimlane col-ux">
+        <div class="lane-header">User<br>Experience</div>
+        <div class="node-stack" style="margin-top: 15px; gap: 18px;">
+          <div class="ux-card" id="ux-cv">
+            CV &amp; Document Studio
+            <span class="badge">PDF/DOCX Ingestion &amp; Viewer</span>
+          </div>
+
+          <div class="ux-card" id="ux-match">
+            Job Match &amp; Gap Analysis
+            <span class="badge">Requirement Delta &amp; Overlap</span>
+          </div>
+
+          <div class="ux-card" id="ux-sim">
+            Voice Interview Simulator
+            <span class="badge">STT Transcribe &amp; 6-Dim Radar</span>
+          </div>
+
+          <div class="ux-card" id="ux-genome">
+            Career Genome Learning Planner
+            <span class="badge">7/14/30-Day Mastery Roadmaps</span>
+          </div>
+
+          <div class="ux-card" id="ux-radar">
+            Opportunity Radar &amp; Job Finder
+            <span class="badge">Live Index &amp; 1-Click Tailored PDF</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 4: Middleware -->
+      <div class="swimlane col-middleware">
+        <div class="lane-header">Middleware</div>
+        <div class="node-stack" style="margin-top: 25px; gap: 26px;">
+          <div class="mw-card" id="mw-gateway">
+            FastAPI Session Gateway
+            <span class="mw-tag">Session Manager &amp; VFS State Router</span>
+          </div>
+
+          <div class="mw-card" id="mw-match">
+            Match Synthesis &amp; Evidence Team
+            <span class="mw-tag">job-analyzer → candidate-evidence</span>
+          </div>
+
+          <div class="mw-card" id="mw-interview">
+            Turn Interviewer &amp; Evaluator Team
+            <span class="mw-tag">interviewer → prober → evaluator</span>
+          </div>
+
+          <div class="mw-card" id="mw-genome">
+            Learning Planner &amp; Researcher Team
+            <span class="mw-tag">gap-analyzer → resource-researcher</span>
+          </div>
+
+          <div class="mw-card" id="mw-tailor">
+            Opportunity Scout &amp; Tailor Team
+            <span class="mw-tag">job-discovery → ats-tailor → pdf</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Column 5: Back End Resources -->
+      <div class="swimlane col-backend">
+        <div class="lane-header">Back End<br>Resources</div>
+        <div class="node-stack" style="margin-top: 50px; gap: 42px;">
+          <div class="be-card" id="be-llm">
+            Google Gemini LLM
+            <span class="be-meta">Gemini 2.5 Flash / Pro API</span>
+          </div>
+
+          <div class="be-card" id="be-memory">
+            Career Memory Store
+            <span class="be-meta">Evidence JSON Store</span>
+          </div>
+
+          <div class="be-card" id="be-apis">
+            External Job &amp; Web APIs
+            <span class="be-meta">JSearch &amp; Tavily Scraping</span>
+          </div>
+
+          <div class="be-card" id="be-artifacts">
+            ATS PDF Artifact Store
+            <span class="be-meta">Tailored Resumes &amp; Battlecards</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dynamic SVG Overlay for Clean Connector Lines -->
+      <svg id="svg-connections">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="#334155"/>
+          </marker>
+          <marker id="arrow-red" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="#ef4444"/>
+          </marker>
+        </defs>
+      </svg>
+
+    </div>
+  </div>
+
+  <!-- Legend & System Summary -->
+  <div class="legend-bar">
+    <div style="font-weight: 700; color: #0f172a;">Component Color Palette:</div>
+    <div class="legend-items">
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#00796b;"></div>
+        <span>User Experience Workspaces</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#f59e0b;"></div>
+        <span>Autonomous Multi-Agent Middleware</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:#8b5cf6;"></div>
+        <span>Back End Foundation Models &amp; Data</span>
+      </div>
+      <div class="legend-item">
+        <div style="width: 14px; height: 2px; background: #334155;"></div>
+        <span>Direct Synchronous Pipe</span>
+      </div>
+      <div class="legend-item">
+        <div style="width: 14px; height: 2px; border-top: 2px dashed #ef4444;"></div>
+        <span>Autonomous Grounding Sync</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dynamic Line Drawing Engine -->
+  <script>
+    function drawConnector(fromId, toId, isDashed = false) {
+      const fromEl = document.getElementById(fromId);
+      const toEl = document.getElementById(toId);
+      const svg = document.getElementById('svg-connections');
+      const board = document.getElementById('diagram-board');
+
+      if (!fromEl || !toEl || !svg || !board) return;
+
+      const boardRect = board.getBoundingClientRect();
+      const r1 = fromEl.getBoundingClientRect();
+      const r2 = toEl.getBoundingClientRect();
+
+      // Start: Right middle of source
+      const x1 = r1.right - boardRect.left;
+      const y1 = r1.top + r1.height / 2 - boardRect.top;
+
+      // End: Left middle of target
+      const x2 = r2.left - boardRect.left;
+      const y2 = r2.top + r2.height / 2 - boardRect.top;
+
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      const dx = Math.abs(x2 - x1) * 0.45;
+      const d = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+
+      path.setAttribute('d', d);
+      path.setAttribute('class', isDashed ? 'conn-dashed' : 'conn-line');
+      path.setAttribute('marker-end', isDashed ? 'url(#arrow-red)' : 'url(#arrow)');
+      svg.appendChild(path);
+    }
+
+    function renderAllConnections() {
+      const svg = document.getElementById('svg-connections');
+      if (svg) {
+        // Clear previous lines
+        while (svg.childNodes.length > 2) {
+          svg.removeChild(svg.lastChild);
+        }
+      }
+
+      // Column 1 -> Column 2
+      drawConnector('u-candidates', 'ch-browser');
+      drawConnector('u-interviewees', 'ch-browser');
+      drawConnector('u-interviewees', 'ch-voice');
+      drawConnector('u-learners', 'ch-browser');
+      drawConnector('u-learners', 'ch-mobile');
+
+      // Column 2 -> Column 3
+      drawConnector('ch-browser', 'ux-cv');
+      drawConnector('ch-browser', 'ux-match');
+      drawConnector('ch-voice', 'ux-sim');
+      drawConnector('ch-browser', 'ux-genome');
+      drawConnector('ch-mobile', 'ux-radar');
+
+      // Column 3 -> Column 4
+      drawConnector('ux-cv', 'mw-gateway');
+      drawConnector('ux-match', 'mw-match');
+      drawConnector('ux-sim', 'mw-interview');
+      drawConnector('ux-genome', 'mw-genome');
+      drawConnector('ux-radar', 'mw-tailor');
+
+      // Column 4 -> Column 5
+      drawConnector('mw-gateway', 'be-memory');
+      drawConnector('mw-match', 'be-llm');
+      drawConnector('mw-interview', 'be-llm');
+      drawConnector('mw-genome', 'be-llm');
+      drawConnector('mw-tailor', 'be-llm');
+      drawConnector('mw-tailor', 'be-apis');
+      drawConnector('mw-tailor', 'be-artifacts');
+
+      // Autonomous Grounding Cross-Link (Red dashed like in reference)
+      drawConnector('mw-interview', 'be-memory', true);
+    }
+
+    // Run on mount and resize
+    window.addEventListener('load', renderAllConnections);
+    window.addEventListener('resize', renderAllConnections);
+  </script>
+</body>
+</html>

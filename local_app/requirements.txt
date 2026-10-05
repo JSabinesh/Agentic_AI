@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+google-genai
+tavily-python
+llama-cloud
+llama-parse
+pypdf
+python-docx
+rendercv
+python-multipart
+python-dotenv
+reportlab

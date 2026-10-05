@@ -1,658 +1,323 @@
-"""NextRole Multi-Agent Local Engine.
-Implements the authentic 5-stage supervisor + 3 specialist subagents architecture:
-1. Intake & Document Processing (LlamaParse / python-docx / pypdf)
-2. Web JD Extraction (Tavily)
-3. Pre-Interview Reconnaissance (hiring-recon subagent via Tavily web search)
-4. Parallel Resume Tailoring (resume-tailor) & Interview Coaching (interview-coach)
-5. Day-of Interview Battlecard (Supervisor synthesis)
-6. Artifact-Routed Follow-Up Chat (Surgical edit routing to the owning agent)
+"""NextRole Multi-Agent Local Engine — Orchestrator & Feature Pipelines.
+
+Modular Architecture:
+- local_app.agents.common: LLM invocation, memory store, evidence store, doc parsing
+- local_app.agents.job_analyzer: `job-analyzer` agent
+- local_app.agents.candidate_evidence: `candidate-evidence` agent (zero-fabrication)
+- local_app.agents.hiring_recon: `hiring-recon` / research agent (Tavily intel)
+- local_app.agents.resume_tailor: `resume-tailor` agent (RenderCV YAML + Markdown)
+- local_app.agents.interviewer: `interviewer` agent (dynamic questioning)
+- local_app.agents.interview_prober: `interview-prober` agent (challenge probes)
+- local_app.agents.interview_evaluator: `interview-evaluator` agent (6-criteria scoring)
+- local_app.agents.interview_coach: `interview-coach` agent (knowledge DB prep)
+- local_app.agents.gap_analyzer: `gap-analyzer` agent (priority gap detector)
+- local_app.agents.resource_researcher: `resource-researcher` agent (courses, docs, repos)
+- local_app.agents.learning_planner: `learning-planner` agent (7/14/30-day evidence plans)
+- local_app.agents.job_discovery: `job-discovery` agent (multi-filter search)
+- local_app.agents.job_normalizer: `job-normalizer` deterministic service
+- local_app.agents.opportunity_matcher: `opportunity-matcher` agent (evidence-grounded matching)
+- local_app.agents.critic: `critic` agent & CriticVerdict
+- local_app.agents.judge: `judge` agent (final battlecard compiler)
+- local_app.agents.supervisor: `supervisor` planner, orchestrator, approval governor, router
 """
 
-import os
-import re
-import io
 import json
-import time
 import asyncio
-from typing import Dict, Any, List, Optional, Tuple
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from typing import Dict, Any, List, Optional
 
-load_dotenv()
-
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
-LLAMA_CLOUD_API_KEY = os.getenv("LLAMA_CLOUD_API_KEY", "")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-
-PRIMARY_MODEL = "gemini-3.5-flash-lite"
-FALLBACK_MODELS = ["gemini-3.5-flash", "gemini-2.5-flash"]
-
-
-def get_genai_client() -> genai.Client:
-    api_key = os.getenv("GOOGLE_API_KEY", "")
-    if not api_key:
-        raise ValueError("GOOGLE_API_KEY is not set in .env")
-    return genai.Client(api_key=api_key)
-
-
-def generate_llm(prompt: str, system_instruction: Optional[str] = None) -> str:
-    """Invokes Gemini with automatic model failover and retries."""
-    client = get_genai_client()
-    models = [PRIMARY_MODEL] + FALLBACK_MODELS
-    last_err = None
-
-    for m in models:
-        try:
-            config = types.GenerateContentConfig(
-                system_instruction=system_instruction
-            ) if system_instruction else None
-
-            resp = client.models.generate_content(
-                model=m,
-                contents=prompt,
-                config=config,
-            )
-            if resp and resp.text:
-                return resp.text.strip()
-        except Exception as e:
-            last_err = e
-            err_str = str(e).lower()
-            print(f"[Model attempt failed] {m}: {e}")
-            # If quota exhausted or model unavailable, immediately try the next model!
-            if "quota" in err_str or "resource_exhausted" in err_str or "404" in err_str or "not_found" in err_str:
-                continue
-            time.sleep(0.5)
-
-    raise RuntimeError(f"All LLM models failed. Last error: {last_err}")
+# ── Re-export common functions and agents ────────────────────────────────────
+from local_app.agents.common import (
+    generate_llm,
+    extract_urls,
+    load_memory,
+    save_memory,
+    upsert_memory,
+    get_memory_for_candidate,
+    get_evidence_store,
+    parse_resume_bytes,
+    extract_job_from_url,
+)
+from local_app.agents.job_analyzer import run_job_analyzer
+from local_app.agents.candidate_evidence import run_candidate_evidence
+from local_app.agents.hiring_recon import run_research_agent
+from local_app.agents.resume_tailor import run_resume_agent
+from local_app.agents.interviewer import run_interviewer_question
+from local_app.agents.interview_prober import run_interview_prober
+from local_app.agents.interview_evaluator import (
+    run_interview_evaluator,
+    generate_final_interview_report,
+)
+from local_app.agents.interview_coach import run_interview_agent
+from local_app.agents.gap_analyzer import run_gap_analyzer
+from local_app.agents.resource_researcher import run_resource_researcher
+from local_app.agents.learning_planner import run_learning_planner
+from local_app.agents.job_normalizer import normalize_job
+from local_app.agents.job_discovery import run_job_discovery
+from local_app.agents.opportunity_matcher import run_opportunity_matcher
+from local_app.agents.critic import CriticVerdict, run_critic_agent, run_all_critics
+from local_app.agents.judge import run_judge
+from local_app.agents.career_switch_advisor import analyze_career_switch
+from local_app.agents.supervisor import (
+    build_plan,
+    execute_full_pipeline_async,
+    approve_and_save_to_memory,
+    classify_and_route_followup,
+    handle_followup_turn,
+)
 
 
 # ============================================================================
-# DOCUMENT PROCESSING (Stage 2)
+# FEATURE PIPELINE 1: JOB MATCH ANALYSIS
+# Agents: job-analyzer | candidate-evidence | hiring-recon | match-synthesis
 # ============================================================================
 
-def extract_docx_bytes(file_bytes: bytes) -> str:
-    """Extract all text, paragraphs, and tables from DOCX binary."""
-    try:
-        import docx
-        doc = docx.Document(io.BytesIO(file_bytes))
-        sections = []
-        for p in doc.paragraphs:
-            txt = p.text.strip()
-            if txt:
-                sections.append(txt)
-        for table in doc.tables:
-            for row in table.rows:
-                cells = [c.text.strip() for c in row.cells if c.text.strip()]
-                dedup = []
-                for c in cells:
-                    if not dedup or dedup[-1] != c:
-                        dedup.append(c)
-                if dedup:
-                    sections.append(" | ".join(dedup))
-        combined = "\n\n".join(sections)
-        if combined.strip():
-            return combined.strip()
-    except Exception as e:
-        print(f"[Warning] python-docx error: {e}")
+def run_match_synthesis(
+    jd_analysis: Dict[str, Any],
+    evidence: Dict[str, Any],
+    research_report: str = ""
+) -> Dict[str, Any]:
+    """Synthesizes a final match report from JD analysis and candidate evidence."""
+    strong = [k for k, v in evidence.get("evidence_map", {}).items() if v.get("strength") == "strong"]
+    partial = [k for k, v in evidence.get("evidence_map", {}).items() if v.get("strength") == "partial"]
+    gaps = evidence.get("gaps", [])
+    overlaps = evidence.get("overlaps", [])
 
-    # Fallback zipfile XML
-    try:
-        import zipfile
-        import xml.etree.ElementTree as ET
-        with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-            xml_content = z.read("word/document.xml")
-            tree = ET.fromstring(xml_content)
-            paragraphs = []
-            for p in tree.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"):
-                texts = [node.text for node in p.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t") if node.text]
-                if texts:
-                    val = "".join(texts).strip()
-                    if val:
-                        paragraphs.append(val)
-            if paragraphs:
-                return "\n\n".join(paragraphs)
-    except Exception as e:
-        print(f"[Warning] docx xml fallback error: {e}")
-
-    return ""
-
-
-def parse_resume_bytes(filename: str, file_bytes: bytes) -> str:
-    """Parse resume binary into clean Markdown."""
-    lower_name = filename.lower()
-    text = ""
-
-    if lower_name.endswith(".docx") or lower_name.endswith(".doc"):
-        text = extract_docx_bytes(file_bytes)
-        if not text.strip() and LLAMA_CLOUD_API_KEY:
-            try:
-                from llama_parse import LlamaParse
-                parser = LlamaParse(api_key=LLAMA_CLOUD_API_KEY, result_type="markdown", verbose=False)
-                documents = parser.load_data(file_bytes, extra_info={"file_name": filename})
-                if documents:
-                    text = "\n\n".join([d.text for d in documents])
-            except Exception as e:
-                print(f"[Warning] LlamaParse DOCX error: {e}")
-
-    elif lower_name.endswith(".pdf"):
-        if LLAMA_CLOUD_API_KEY:
-            try:
-                from llama_parse import LlamaParse
-                parser = LlamaParse(api_key=LLAMA_CLOUD_API_KEY, result_type="markdown", verbose=False)
-                documents = parser.load_data(file_bytes, extra_info={"file_name": filename})
-                if documents:
-                    text = "\n\n".join([d.text for d in documents])
-            except Exception as e:
-                print(f"[Warning] LlamaParse PDF error: {e}")
-
-        if not text.strip():
-            try:
-                import pypdf
-                reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-                pages = []
-                for i, page in enumerate(reader.pages):
-                    t = page.extract_text() or ""
-                    if t.strip():
-                        pages.append(f"## Page {i+1}\n\n{t}")
-                text = "\n\n".join(pages)
-            except Exception as e:
-                print(f"[Warning] pypdf error: {e}")
-
-    if not text.strip():
-        try:
-            text = file_bytes.decode("utf-8", errors="ignore")
-        except Exception:
-            text = ""
-
-    return text.strip()
-
-
-def extract_job_from_url(url: str) -> Dict[str, Any]:
-    """Extract job description text and metadata from URL using Tavily."""
-    if not TAVILY_API_KEY:
-        raise ValueError("TAVILY_API_KEY is missing in .env")
-
-    from tavily import TavilyClient
-    client = TavilyClient(api_key=TAVILY_API_KEY)
-    raw_text = ""
-
-    try:
-        if hasattr(client, "extract"):
-            res = client.extract(urls=[url])
-            if res and "results" in res and len(res["results"]) > 0:
-                raw_text = res["results"][0].get("raw_content", "")
-    except Exception as e:
-        print(f"[Notice] Tavily extract: {e}")
-
-    if not raw_text:
-        search_res = client.search(query=f"job opening details {url}", max_results=3)
-    if not raw_text.strip():
-        raw_text = f"Job listing extracted from {url}. Review the web source at {url}."
-
-    prompt = f"""You are an expert technical recruiter and job analyst.
-Extract and structure the following raw job description into clean Markdown.
-
-Raw content:
-\"\"\"
-{raw_text[:9000]}
-\"\"\"
-
-Format with:
-# <Company Name> — <Role Title>
-- **Location:** <Location> (<Remote/Hybrid/Onsite>)
-- **Employment Type:** <Full-time/Contract>
-- **Target Level:** <Senior/Staff/Lead/Mid>
-
-## Role Summary
-<2-3 concise sentences>
-
-## Key Responsibilities
-- ...
-
-## Required Qualifications & Must-Have Skills
-- ...
-
-## Preferred Qualifications
-- ...
-
-## Tech Stack & Tools
-- ...
-"""
-    try:
-        structured_markdown = generate_llm(prompt, system_instruction="You extract accurate, actionable job posting information.")
-    except Exception as e:
-        print(f"[Warning] LLM structuring error for JD ({e}); using direct markdown fallback.")
-        structured_markdown = f"# Target Job Posting\n\n**Source URL:** {url}\n\n## Job Description\n\n{raw_text[:7000]}"
+    total = len(jd_analysis.get("required_skills", [])) or 1
+    score = min(95, int((len(strong) * 1.0 + len(partial) * 0.5) / total * 100))
 
     return {
-        "url": url,
-        "markdown": structured_markdown
+        "score": score,
+        "skills_score": min(95, score + 5),
+        "exp_score": min(95, score - 3),
+        "impact_score": min(95, score - 7),
+        "strong_matches": strong,
+        "partial_matches": partial,
+        "overlaps": overlaps,
+        "gaps": gaps,
+        "jd_role": jd_analysis.get("role", ""),
+        "jd_seniority": jd_analysis.get("seniority", ""),
+        "interview_priorities": [g["name"] for g in gaps if g.get("sev") == "high"][:3],
     }
 
 
-def extract_urls(text: str) -> List[str]:
-    pattern = r"https?://(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*)"
-    return re.findall(pattern, text)
-
-
-# ============================================================================
-# SPECIALIST SUBAGENT 1: hiring-recon
-# ============================================================================
-
-def run_hiring_recon(resume_text: str, jd_text: str, update_request: Optional[str] = None, existing_report: Optional[str] = None) -> str:
-    """Pre-interview reconnaissance analyst subagent.
-    Gathers company intel, financial & hiring signals, culture, salary range, and match analysis.
-    """
-    company_name = "Target Company"
-    first_lines = jd_text.split("\n")[:5]
-    for line in first_lines:
-        if "—" in line:
-            company_name = line.split("—")[0].replace("#", "").strip()
-            break
-        elif "-" in line:
-            company_name = line.split("-")[0].replace("#", "").strip()
-            break
-
-    # Live web research via Tavily
-    web_intel = ""
-    if TAVILY_API_KEY:
-        try:
-            from tavily import TavilyClient
-            client = TavilyClient(api_key=TAVILY_API_KEY)
-            q1 = f"{company_name} company overview business model tech stack"
-            q2 = f"{company_name} layoffs funding revenue hiring culture glassdoor"
-            r1 = client.search(q1, max_results=2)
-            r2 = client.search(q2, max_results=2)
-            web_intel = "\n".join([res.get("content", "") for res in r1.get("results", []) + r2.get("results", [])])
-        except Exception as e:
-            print(f"[Warning] Tavily recon search error: {e}")
-
-    sys_prompt = """You are the `hiring-recon` specialist subagent in NextRole.
-Your role: Pre-interview reconnaissance analyst.
-You produce a rigorous, unvarnished intelligence report covering:
-1. Company snapshot (stage, business model, size, recent news)
-2. Financial & hiring signals (funding, headcount trends, layoffs)
-3. Reputation & culture (Glassdoor themes, attrition patterns)
-4. Role market context & realistic salary band
-5. Match analysis:
-   - Strengths to emphasize (exact alignments)
-   - Critical skill gaps / mitigations (missing JD keywords or experiences)
-   - Top 3-5 strategic focus areas
-"""
-
-    if update_request and existing_report:
-        prompt = f"""UPDATE MODE:
-The candidate requested this surgical update to the existing research report:
-"{update_request}"
-
-Existing report:
-{existing_report}
-
-Target JD:
-{jd_text}
-
-Candidate Resume:
-{resume_text}
-
-Update the relevant section while strictly preserving all other existing analysis."""
-    else:
-        prompt = f"""CREATE MODE:
-Company Name: {company_name}
-
-Target Job Description:
-{jd_text}
-
-Candidate Resume:
-{resume_text}
-
-Live Web Intelligence:
-{web_intel[:3000]}
-
-Generate the complete `# {company_name} Reconnaissance Report` in Markdown."""
-
-    return generate_llm(prompt, system_instruction=sys_prompt)
-
-
-# ============================================================================
-# SPECIALIST SUBAGENT 2: resume-tailor
-# ============================================================================
-
-def run_resume_tailor(resume_text: str, jd_text: str, research_report: str, update_request: Optional[str] = None, existing_yaml: Optional[str] = None) -> Tuple[str, str]:
-    """Resume editor subagent.
-    Generates tailored RenderCV YAML and formatted Markdown tailored to the JD & recon report.
-    """
-    sys_prompt = """You are the `resume-tailor` specialist subagent in NextRole.
-Your role: Senior executive resume editor.
-You rewrite the candidate's resume tailored to this specific JD and hiring-recon report.
-You DO NOT invent experiences or fake titles. You strategically highlight relevant achievements using quantifiable STAR impact metrics (e.g. 'Engineered X resulting in Y% performance improvement').
-You must generate:
-1. Valid, clean RenderCV YAML.
-2. Formatted Markdown presentation.
-"""
-
-    if update_request and existing_yaml:
-        prompt = f"""UPDATE MODE:
-The user requested a surgical edit to their tailored resume:
-"{update_request}"
-
-Existing RenderCV YAML:
-{existing_yaml}
-
-Target JD:
-{jd_text}
-
-Candidate Resume:
-{resume_text}
-
-Apply the requested changes to the YAML and Markdown summary. Maintain all other experience intact."""
-    else:
-        prompt = f"""CREATE MODE:
-Rewrite the candidate's resume tailored to the target role.
-
-Candidate Resume:
-{resume_text}
-
-Target Job Description:
-{jd_text}
-
-Hiring Recon Report (Priority Signals & Match Gaps):
-{research_report}
-
-Generate two sections:
-SECTION 1: ```yaml
-cv:
-  name: <Full Name>
-  location: <Location>
-  email: <Email>
-  headline: <Target Role Headline>
-  sections:
-    summary:
-      - <3-sentence punchy summary highlighting JD keywords>
-    skills:
-      - name: Core Technologies
-        details: <relevant skills>
-      - name: Tools & Frameworks
-        details: <tools>
-    experience:
-      - company: <Company>
-        position: <Title>
-        start_date: <Start>
-        end_date: <End>
-        highlights:
-          - <Tailored bullet with action verb and quantifiable metric>
-          - <Tailored bullet addressing target JD requirements>
-    education:
-      - institution: <University>
-        degree: <Degree>
-```
-
-SECTION 2: Detailed Markdown preview of the rewritten resume."""
-
-    raw_output = generate_llm(prompt, system_instruction=sys_prompt)
-
-    # Extract YAML block
-    yaml_content = ""
-    if "```yaml" in raw_output:
-        parts = raw_output.split("```yaml")
-        if len(parts) > 1:
-            yaml_content = parts[1].split("```")[0].strip()
-    elif "```" in raw_output:
-        parts = raw_output.split("```")
-        if len(parts) > 1:
-            yaml_content = parts[1].strip()
-
-    if not yaml_content:
-        yaml_content = f"# Tailored RenderCV Spec\ncv:\n  summary:\n    - Tailored for target position\n"
-
-    return yaml_content, raw_output
-
-
-# ============================================================================
-# SPECIALIST SUBAGENT 3: interview-coach
-# ============================================================================
-
-def run_interview_coach(resume_text: str, jd_text: str, research_report: str, update_request: Optional[str] = None, existing_prep: Optional[str] = None) -> str:
-    """Interview coach subagent.
-    Produces 60s/30s elevator pitches, round-by-round strategies, and STAR stories.
-    """
-    sys_prompt = """You are the `interview-coach` specialist subagent in NextRole.
-Your role: Elite interview strategist and coach.
-You prepare the candidate for high-stakes interviews with:
-1. Reusable Self-Introduction:
-   - 60-Second Elevator Pitch (~120 words)
-   - 30-Second Short Pitch (~60 words)
-2. Round-by-round interview strategy:
-   - Round 1: Recruiter Screen (narrative, salary framing, role alignment)
-   - Round 2: Hiring Manager Behavioral (leadership, conflict, cross-functional)
-   - Round 3: Technical Deep-Dive / System Design (architecture, scale, trade-offs)
-3. 3 Custom STAR Stories (Situation, Task, Action, Result) drawn directly from the candidate's resume, specifically bridging the skill gaps identified in the recon report.
-4. 4 High-impact Reverse-Interview Questions to ask the interviewers.
-"""
-
-    if update_request and existing_prep:
-        prompt = f"""UPDATE MODE:
-The user requested this specific change to their interview prep doc:
-"{update_request}"
-
-Existing prep doc:
-{existing_prep}
-
-Target JD:
-{jd_text}
-
-Candidate Resume:
-{resume_text}
-
-Update the relevant rounds or stories, preserving all other prep intact."""
-    else:
-        prompt = f"""CREATE MODE:
-Candidate Resume:
-{resume_text}
-
-Target Job Description:
-{jd_text}
-
-Hiring Recon Report:
-{research_report}
-
-Generate the comprehensive `# Interview Prep Doc` in Markdown."""
-
-    return generate_llm(prompt, system_instruction=sys_prompt)
-
-
-# ============================================================================
-# SUPERVISOR AGENT: career_agent (Orchestrator & Battlecard Synthesis)
-# ============================================================================
-
-def run_battlecard_synthesis(resume_text: str, jd_text: str, research_report: str, prep_doc: str) -> str:
-    """Assembles the final day-of interview battlecard (cheat sheet)."""
-    prompt = f"""You are the `career_agent` supervisor synthesizing the final Day-of Battlecard.
-Create a compact, 1-page per round cheat sheet the candidate can review 10 minutes before joining the interview call.
-
-Candidate Resume highlights:
-{resume_text[:2000]}
-
-Target JD:
-{jd_text[:2000]}
-
-Research signals:
-{research_report[:2000]}
-
-Interview Prep doc:
-{prep_doc[:3000]}
-
-Format as a high-density, beautifully structured Markdown Battlecard with:
-# ⚡ Day-of Interview Battlecard
-- **Company & Role:** ...
-- **Core Narrative:** 2-sentence positioning anchor
-
-## Quick Pitch Anchor (60-sec reminder)
-- Opening sentence: ...
-- 2 Proof points: ...
-- Closing: Why this company: ...
-
-## Round 1 Cheat Sheet: Recruiter Screen
-- 3 Questions & Bulleted Answers
-- Key talking points & salary anchor
-
-## Round 2 Cheat Sheet: Hiring Manager & Leadership
-- 3 STAR Story Triggers (Situation -> Action -> Result metrics)
-
-## Round 3 Cheat Sheet: Technical Architecture & Systems
-- Key systems to cite, architecture trade-offs, metrics achieved
-
-## 3 Critical Questions to Ask Them
-1. ...
-2. ...
-3. ...
-"""
-    return generate_llm(prompt, system_instruction="You synthesize high-density, elite day-of interview cheat sheets.")
-
-
-# ============================================================================
-# PARALLEL PIPELINE EXECUTION
-# ============================================================================
-
-async def execute_full_pipeline_async(session: Dict[str, Any]) -> Dict[str, Any]:
-    """Orchestrates the 5-stage pipeline:
-    Stage 1 & 2: Resume + JD already parsed.
-    Stage 3: hiring-recon subagent runs web research.
-    Stage 4: resume-tailor & interview-coach run IN PARALLEL.
-    Stage 5: Supervisor compiles day-of battlecard.
-    """
+async def run_job_match_pipeline(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Runs Feature Team 1: job-analyzer → candidate-evidence → match-synthesis."""
     resume_text = session.get("files", {}).get("/processed/resume.md", "")
-    jd_text = session.get("files", {}).get("/processed/jd.md", "")
-
+    jd_text     = session.get("files", {}).get("/processed/jd.md", "")
     if not resume_text or not jd_text:
-        return {"status": "error", "message": "Missing resume or JD in session."}
+        return {"error": "Missing resume or JD"}
 
-    # Stage 3: Hiring Recon
-    recon_report = await asyncio.to_thread(run_hiring_recon, resume_text, jd_text)
-    session["files"]["/research/recon_report.md"] = recon_report
+    jd_analysis = await asyncio.to_thread(run_job_analyzer, jd_text)
+    evidence    = await asyncio.to_thread(run_candidate_evidence, resume_text, jd_analysis)
 
-    # Stage 4: Run resume-tailor and interview-coach in parallel!
-    tailor_task = asyncio.to_thread(run_resume_tailor, resume_text, jd_text, recon_report)
-    coach_task = asyncio.to_thread(run_interview_coach, resume_text, jd_text, recon_report)
+    research_report = session.get("files", {}).get("/research/recon_report.md", "")
+    if not research_report:
+        try:
+            research_report = await asyncio.to_thread(run_research_agent, resume_text, jd_text)
+            session["files"]["/research/recon_report.md"] = research_report
+        except Exception:
+            research_report = ""
 
-    (yaml_content, tailor_preview), prep_doc = await asyncio.gather(tailor_task, coach_task)
+    result = run_match_synthesis(jd_analysis, evidence, research_report)
 
-    session["files"]["/tailored_resume/resume.yaml"] = yaml_content
-    session["files"]["/tailored_resume/tailored_resume.md"] = tailor_preview
-    session["files"]["/interview_coach/interview_prep.md"] = prep_doc
+    # Persist into shared Career Evidence Store
+    store = get_evidence_store(session)
+    store["skills"] = evidence.get("evidence_map", {})
+    store["overlaps"] = evidence.get("overlaps", [])
+    store["gaps"] = evidence.get("gaps", [])
 
-    # Stage 5: Supervisor Battlecard
-    battlecard = await asyncio.to_thread(run_battlecard_synthesis, resume_text, jd_text, recon_report, prep_doc)
-    session["files"]["/interview_battlecard/battlecard.md"] = battlecard
+    session["files"]["/match_analysis/match_report.json"] = json.dumps(result, indent=2)
+    return result
 
-    session["stage"] = "COMPLETED"
 
-    summary_text = (
-        "### 🚀 Full Multi-Agent Workflow Executed!\n\n"
-        "1. **🔍 `hiring-recon`:** Completed live web research on company, salary, and match gaps (`/research/recon_report.md`).\n"
-        "2. **✍️ `resume-tailor`:** Re-engineered your resume and emitted RenderCV YAML (`/tailored_resume/resume.yaml`).\n"
-        "3. **🎯 `interview-coach`:** Formulated self-introductions and per-round STAR stories in parallel (`/interview_coach/interview_prep.md`).\n"
-        "4. **⚡ `career_agent`:** Compiled your day-of interview battlecard (`/interview_battlecard/battlecard.md`).\n\n"
-        "**All artifacts are available in the Workspace on the right.** You can now iterate by chatting (e.g. *'Add Docker to skills'*, *'Add a 4th interview round'*)."
+# ============================================================================
+# FEATURE PIPELINE 2: INTERVIEW SIMULATOR
+# Agents: interviewer | interview-prober | interview-evaluator
+# ============================================================================
+
+def run_sim_turn(
+    session: Dict[str, Any],
+    round_type: str,
+    user_answer: Optional[str] = None,
+    action: Optional[str] = None
+) -> Dict[str, Any]:
+    """Runs Feature Team 2 turn: interviewer → interview-prober → interview-evaluator."""
+    resume_text = session.get("files", {}).get("/processed/resume.md", "")
+    jd_text     = session.get("files", {}).get("/processed/jd.md", "")
+    store       = get_evidence_store(session)
+    sim_history = store.setdefault("sim_history", [])
+
+    if action == "reset":
+        sim_history.clear()
+        q = run_interviewer_question(round_type, resume_text, jd_text, turn_index=1)
+        sim_history.append({"question": q, "round": round_type, "answer": None, "turn": 1, "is_probe": False})
+        return {
+            "question": q,
+            "turn_index": 1,
+            "is_probe": False,
+            "has_resume": bool(resume_text),
+            "sim_history": sim_history,
+        }
+
+    if action == "final_report":
+        report = generate_final_interview_report(sim_history, resume_text, jd_text)
+        return {
+            "final_report": report,
+            "turn_index": len(sim_history),
+            "has_resume": bool(resume_text),
+            "sim_history": sim_history,
+        }
+
+    prior_q = sim_history[-1]["question"] if sim_history else None
+    evaluation = None
+    probe      = None
+
+    answered_count = len([t for t in sim_history if t.get("answer")])
+
+    if user_answer and prior_q:
+        evaluation = run_interview_evaluator(prior_q, user_answer, round_type)
+        probe      = run_interview_prober(prior_q, user_answer)
+        sim_history[-1]["answer"]     = user_answer
+        sim_history[-1]["evaluation"] = evaluation
+        sim_history[-1]["probe"]      = probe
+        answered_count += 1
+
+    next_turn_index = answered_count + 1
+
+    if probe:
+        next_question = probe
+        is_probe = True
+    else:
+        next_question = run_interviewer_question(
+            round_type, resume_text, jd_text,
+            prior_answer=user_answer, prior_question=prior_q,
+            turn_index=next_turn_index
+        )
+        is_probe = False
+
+    sim_history.append({
+        "question": next_question,
+        "round": round_type,
+        "answer": None,
+        "turn": next_turn_index,
+        "is_probe": is_probe
+    })
+
+    return {
+        "question": next_question,
+        "evaluation": evaluation,
+        "is_probe": is_probe,
+        "turn_index": next_turn_index,
+        "has_resume": bool(resume_text),
+        "total_answered": answered_count,
+    }
+
+
+# ============================================================================
+# FEATURE PIPELINE 3: RESOURCES
+# Agents: gap-analyzer | resource-researcher | learning-planner
+# ============================================================================
+
+async def run_resources_pipeline(session: Dict[str, Any], topic: str = "") -> Dict[str, Any]:
+    """Runs Feature Team 3: gap-analyzer → resource-researcher → learning-planner."""
+    gaps      = await asyncio.to_thread(run_gap_analyzer, session, topic)
+    resources = await asyncio.to_thread(run_resource_researcher, gaps)
+    plans     = await asyncio.to_thread(run_learning_planner, gaps, resources)
+
+    store = get_evidence_store(session)
+    store["learning_plan"] = plans
+    store["learning_resources"] = resources
+    session["files"]["/resources/learning_plan.json"] = json.dumps(plans, indent=2)
+    session["files"]["/resources/learning_resources.json"] = json.dumps(resources, indent=2)
+
+    return {"gaps": gaps, "resources": resources, "plans": plans, "topic": topic}
+
+
+# ============================================================================
+# FEATURE PIPELINE 4: JOB FINDER
+# Agents: job-discovery | job-normalizer | opportunity-matcher
+# ============================================================================
+
+async def run_job_finder_pipeline(
+    query: str,
+    filters: List[str],
+    session: Dict[str, Any],
+    company: str = "",
+    country: str = ""
+) -> Dict[str, Any]:
+    """Runs Feature Team 4: job-discovery → job-normalizer → opportunity-matcher."""
+    from datetime import datetime
+    now_str = datetime.now().strftime("%H:%M:%S")
+
+    logs = [
+        f"[{now_str}] [Supervisor Agent] Initialized Opportunity Radar with filters: Role='{query or 'All'}', Company='{company or 'All'}', Country='{country or 'All'}'",
+    ]
+
+    raw_jobs = await asyncio.to_thread(run_job_discovery, query, filters, session, company, country)
+    from local_app.agents.job_discovery import LAST_JSEARCH_ERROR
+    if raw_jobs:
+        logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] [Job Discovery Agent] Retrieved {len(raw_jobs)} live job postings from LinkedIn, Indeed, Glassdoor via JSearch API")
+    elif LAST_JSEARCH_ERROR:
+        logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] [Job Discovery Agent] JSearch API alert: {LAST_JSEARCH_ERROR}")
+    else:
+        logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] [Job Discovery Agent] Retrieved 0 live job postings for this exact query.")
+
+    matched = await asyncio.to_thread(run_opportunity_matcher, raw_jobs, session)
+    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] [Job Normalizer] Standardized posting schemas, compensation metadata, and direct apply links")
+    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] [Opportunity Matcher] Scored candidate evidence across {len(matched)} postings against Career Evidence Store")
+    logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] [ATS Tailor Agent] Standing by — 1-click ATS PDF resume & interview battlecard available per job")
+
+    store = get_evidence_store(session)
+    store["job_results"] = matched
+    session["files"]["/job_finder/results.json"] = json.dumps(matched, indent=2)
+
+    return {"jobs": matched, "total": len(matched), "logs": logs}
+
+
+async def run_career_switch_pipeline(
+    current_role: str,
+    target_role: str,
+    experience_level: str,
+    currency: str,
+    session: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Runs Feature Team 5: Career Switch Advisor.
+    Evaluates role transition, comparative salary curves, pros/cons, and suggested better pivots.
+    """
+    candidate_resume = session.get("files", {}).get("/processed/resume.md", "")
+    analysis = await asyncio.to_thread(
+        analyze_career_switch,
+        current_role,
+        target_role,
+        experience_level,
+        currency,
+        candidate_resume
     )
 
-    return {
-        "status": "success",
-        "summary": summary_text,
-        "files": session["files"]
-    }
+    # Store analysis in workspace artifacts
+    session["files"]["/career_switch/analysis.json"] = json.dumps(analysis, indent=2)
 
+    # Also build a human-readable markdown version
+    md_lines = [
+        f"# Career Switch Strategic Evaluation: {analysis.get('current_role')} → {analysis.get('target_role')}",
+        f"- **Experience Level:** {analysis.get('experience_level')}",
+        f"- **Currency:** {analysis.get('currency')} ({analysis.get('currency_symbol')})",
+        f"- **10-Year Trajectory Delta:** {int(round(float(analysis.get('salary_graph', {}).get('delta_10yr_pct', 0) or 0))):+d}%",
+        f"- **Strategic Verdict:** {analysis.get('better_solution', {}).get('verdict_badge')}\n",
+        f"## 1. Executive Summary\n{analysis.get('better_solution', {}).get('summary')}\n",
+        f"## 2. Recommended Higher-Yield Pivot: {analysis.get('suggested_better_role', {}).get('title')}",
+        f"> {analysis.get('suggested_better_role', {}).get('tagline')}\n",
+        "### Why Superior:\n" + "\n".join(f"- {w}" for w in analysis.get('suggested_better_role', {}).get('why_superior', [])),
+        "\n### Bridging Skills Required:\n" + "\n".join(f"- {s}" for s in analysis.get('suggested_better_role', {}).get('bridging_skills', [])),
+        f"\n## 3. Specific Switch Pros & Cons ({analysis.get('current_role')} → {analysis.get('target_role')})",
+        "### Advantages (Pros):\n" + "\n".join(f"- **{p.get('title')}:** {p.get('detail')}" for p in analysis.get('switch_pros', [])),
+        "\n### Risks & Drawbacks (Cons):\n" + "\n".join(f"- **{c.get('title')}:** {c.get('detail')} *(Severity: {c.get('severity', 'medium').upper()})*" for c in analysis.get('switch_cons', [])),
+        "\n## 4. General Career Switching Pros & Cons",
+        "### Macro Pros:\n" + "\n".join(f"- **{p.get('title')}:** {p.get('detail')}" for p in analysis.get('general_switching_pros_and_cons', {}).get('pros', [])),
+        "\n### Macro Cons:\n" + "\n".join(f"- **{c.get('title')}:** {c.get('detail')}" for c in analysis.get('general_switching_pros_and_cons', {}).get('cons', [])),
+        "\n### Strategic De-risking Checklist:\n" + "\n".join(f"- {item}" for item in analysis.get('general_switching_pros_and_cons', {}).get('strategic_checklist', []))
+    ]
+    session["files"]["/career_switch/report.md"] = "\n".join(md_lines)
 
-# ============================================================================
-# STAGE 6: SURGICAL FOLLOW-UP ROUTING
-# ============================================================================
+    return {"analysis": analysis, "files": session.get("files", {})}
 
-def classify_and_route_followup(user_message: str) -> str:
-    """Classifies user's follow-up request to the owning agent:
-    - 'resume-tailor' (resume, skills, bullets, experiences, formatting)
-    - 'interview-coach' (interview, questions, pitch, rounds, STAR stories)
-    - 'hiring-recon' (company, funding, culture, salaries, competitors, research)
-    - 'career-agent' (battlecard, general questions, summary)
-    """
-    prompt = f"""Classify which specialist agent owns this user request:
-User Request: "{user_message}"
-
-Allowed outputs (reply with EXACTLY one of these four tags, nothing else):
-- resume-tailor
-- interview-coach
-- hiring-recon
-- career-agent
-"""
-    tag = generate_llm(prompt, system_instruction="You are a strict intent router.").strip().lower()
-    for valid in ["resume-tailor", "interview-coach", "hiring-recon", "career-agent"]:
-        if valid in tag:
-            return valid
-    return "career-agent"
-
-
-def handle_followup_turn(user_message: str, session: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any]]:
-    """Routes follow-up edit to the owning agent, performs surgical file update, and returns (agent_tag, response_msg, updated_files)."""
-    target_agent = classify_and_route_followup(user_message)
-    files = session.get("files", {})
-
-    resume_text = files.get("/processed/resume.md", "")
-    jd_text = files.get("/processed/jd.md", "")
-
-    if target_agent == "resume-tailor":
-        existing_yaml = files.get("/tailored_resume/resume.yaml", "")
-        new_yaml, new_preview = run_resume_tailor(
-            resume_text=resume_text,
-            jd_text=jd_text,
-            research_report=files.get("/research/recon_report.md", ""),
-            update_request=user_message,
-            existing_yaml=existing_yaml
-        )
-        files["/tailored_resume/resume.yaml"] = new_yaml
-        files["/tailored_resume/tailored_resume.md"] = new_preview
-        msg = f"✍️ **[Routed to `resume-tailor`]:** Updated `/tailored_resume/resume.yaml` based on: *\"{user_message}\"*\n\nReview the updated YAML and Markdown in the workspace!"
-        return target_agent, msg, files
-
-    elif target_agent == "interview-coach":
-        existing_prep = files.get("/interview_coach/interview_prep.md", "")
-        new_prep = run_interview_coach(
-            resume_text=resume_text,
-            jd_text=jd_text,
-            research_report=files.get("/research/recon_report.md", ""),
-            update_request=user_message,
-            existing_prep=existing_prep
-        )
-        files["/interview_coach/interview_prep.md"] = new_prep
-        msg = f"🎯 **[Routed to `interview-coach`]:** Updated `/interview_coach/interview_prep.md` with: *\"{user_message}\"*\n\nCheck the updated prep doc in the workspace."
-        return target_agent, msg, files
-
-    elif target_agent == "hiring-recon":
-        existing_recon = files.get("/research/recon_report.md", "")
-        new_recon = run_hiring_recon(
-            resume_text=resume_text,
-            jd_text=jd_text,
-            update_request=user_message,
-            existing_report=existing_recon
-        )
-        files["/research/recon_report.md"] = new_recon
-        msg = f"🔍 **[Routed to `hiring-recon`]:** Updated research report `/research/recon_report.md` with additional intelligence."
-        return target_agent, msg, files
-
-    else:
-        # General conversation or battlecard update
-        if "battlecard" in user_message.lower():
-            new_battlecard = run_battlecard_synthesis(
-                resume_text=resume_text,
-                jd_text=jd_text,
-                research_report=files.get("/research/recon_report.md", ""),
-                prep_doc=files.get("/interview_coach/interview_prep.md", "")
-            )
-            files["/interview_battlecard/battlecard.md"] = new_battlecard
-            msg = f"⚡ **[Supervisor `career_agent`]:** Re-compiled `/interview_battlecard/battlecard.md`."
-            return "career-agent", msg, files
-
-        # Conversational reply citing current artifacts
-        context = f"Resume:\n{resume_text[:1500]}\n\nJD:\n{jd_text[:1500]}\n\nResearch:\n{files.get('/research/recon_report.md', '')[:1500]}"
-        prompt = f"""Candidate Question/Comment: "{user_message}"\n\nContext:\n{context}\n\nProvide an insightful, direct, supportive response:"""
-        answer = generate_llm(prompt, system_instruction="You are the lead Career Agent supervisor.")
-        return "career-agent", answer, files
