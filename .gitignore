@@ -35,4 +35,4 @@ dom_dump*
 architecture_diagram*
 local_app/generated_resumes/
 local_app/career_memory.json
-local_app/generate_architecture_pdf.py
+local_app/generate_architecture_pdf.py

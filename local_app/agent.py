@@ -320,4 +320,3 @@ async def run_career_switch_pipeline(
     session["files"]["/career_switch/report.md"] = "\n".join(md_lines)
 
     return {"analysis": analysis, "files": session.get("files", {})}
-
